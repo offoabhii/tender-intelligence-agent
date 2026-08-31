@@ -1,238 +1,226 @@
 """
-Tender Intelligence Agent Pipeline
+Real Tender Intelligence Pipeline.
 
-Workflow:
-1. Runs real search/scrape for each category.
-2. Uses the auditor to extract relevant tenders.
-3. Rejects Net Cost bus operations.
-4. Saves only valid real results in data/live_tenders.json.
-5. Writes health status so failures are visible.
+Pipeline:
+1. Tavily searches real tender-related web pages.
+2. Groq/OpenAI audits each actual source.
+3. Python validates current date/category/Gross Cost rules.
+4. Results are saved to data/live_tenders.json.
+5. GitHub Actions commits the JSON so Streamlit Cloud can display it.
 """
 
 import json
 import os
 from datetime import datetime, timezone
-from types import SimpleNamespace
 
-from config import SOURCES, CATEGORIES_ALLOWED
-from app.scraper import fetch_tender_sources
 from app.auditor import IntelligentAuditor
-from app.db import init_db, save_tender, log_system_status
+from app.db import init_db, log_system_status, save_tender
+from app.notifier import send_alert
+from app.scraper import fetch_tender_sources
+from config import SEARCHES, TAVILY_RESULTS_PER_CATEGORY
 
 
-OUTPUT_FILE = os.path.join("data", "live_tenders.json")
+DATA_DIR = "data"
+LIVE_TENDERS_FILE = os.path.join(DATA_DIR, "live_tenders.json")
+HEALTH_FILE = os.path.join(DATA_DIR, "health.json")
 
 
-def normalize_tender(item: dict, source_name: str) -> dict:
-    """
-    Normalizes different auditor outputs into one stable JSON structure.
-    Does NOT create fake values.
-    Missing values remain NOT SURE.
-    """
-
-    category = str(item.get("category", "")).strip()
-
-    # Strict category whitelist.
-    if category not in CATEGORIES_ALLOWED:
-        return {}
-
-    # Support both old and new field names.
-    is_net_cost = bool(
-        item.get("is_net_cost_model", item.get("is_net_cost", False))
-    )
-
-    # Absolute hard rule:
-    # Bus operations must be Gross Cost only.
-    if category == "Bus operations (gross cost only)" and is_net_cost:
-        print(f"[REJECTED] Net Cost bus tender: {item.get('title', 'Unknown title')}")
-        return {}
-
-    title = str(item.get("title", "")).strip()
-    if not title or title.upper() in {"NOT SURE", "N/A", "NONE"}:
-        return {}
-
-    def safe_value(field_name, default="NOT SURE"):
-        value = item.get(field_name, default)
-        if value is None:
-            return default
-
-        value = str(value).strip()
-
-        if not value or value.lower() in {"none", "null", "n/a", "-", "unknown"}:
-            return default
-
-        return value
-
-    return {
-        "title": title,
-        "source_url": safe_value("source_url", source_name),
-        "category": category,
-        "closing_date": safe_value("closing_date"),
-        "issued_by": safe_value("issued_by"),
-        "qualification_criteria": safe_value("qualification_criteria"),
-        "eligibility_status": safe_value("eligibility_status"),
-        "is_net_cost": is_net_cost,
-        "is_open_now": bool(
-            item.get("is_currently_open", item.get("is_open_now", False))
-        ),
-        "extraction_confidence": safe_value(
-            "confidence_score",
-            safe_value("extraction_confidence", "LOW")
-        ),
-        "found_at": datetime.now(timezone.utc).isoformat(),
-        "source_name": source_name
-    }
+def utc_now():
+    return datetime.now(timezone.utc).isoformat()
 
 
-def save_json(tenders: list[dict]) -> None:
-    """Persist real tender output in a Git-friendly JSON file."""
-    os.makedirs("data", exist_ok=True)
+def write_json(path: str, payload: dict):
+    os.makedirs(DATA_DIR, exist_ok=True)
 
+    with open(path, "w", encoding="utf-8") as file:
+        json.dump(payload, file, indent=2, ensure_ascii=False)
+
+
+def write_health(status: str, message: str, details: list[str] | None = None):
     payload = {
-        "generated_at": datetime.now(timezone.utc).isoformat(),
-        "record_count": len(tenders),
-        "data_source": "LIVE_FETCHED_DATA",
-        "tenders": tenders
+        "status": status,
+        "message": message,
+        "updated_at": utc_now(),
+        "details": details or [],
     }
 
-    with open(OUTPUT_FILE, "w", encoding="utf-8") as file:
-        json.dump(payload, file, ensure_ascii=False, indent=2)
+    write_json(HEALTH_FILE, payload)
 
-    print(f"[DATA] Wrote {len(tenders)} real records to {OUTPUT_FILE}")
+    try:
+        log_system_status(status, message)
+    except Exception as error:
+        print(f"[HEALTH] SQLite health logging failed: {error}")
+
+
+def deduplicate(tenders: list[dict]) -> list[dict]:
+    unique = []
+    seen = set()
+
+    for tender in tenders:
+        key = (
+            tender.get("title", "").strip().lower(),
+            tender.get("source_url", "").strip().lower(),
+        )
+
+        if not key[0] or not key[1] or key in seen:
+            continue
+
+        seen.add(key)
+        unique.append(tender)
+
+    return unique
 
 
 def run_pipeline() -> int:
     """
-    Executes the full real-data tender discovery pipeline.
+    Execute a real tender scan.
 
     Returns:
-        Number of valid, real tenders found.
+        The number of verified, currently open tenders found.
+
+    Raises:
+        RuntimeError if all searches fail.
     """
 
-    start_time = datetime.now(timezone.utc)
+    started_at = utc_now()
 
-    print("=" * 65)
-    print("TENDER INTELLIGENCE AGENT — REAL DATA PIPELINE")
-    print(f"Started: {start_time.isoformat()}")
-    print("=" * 65)
+    print("=" * 72)
+    print("TENDER INTELLIGENCE AGENT — REAL LIVE DATA PIPELINE")
+    print(f"Started at: {started_at}")
+    print("=" * 72)
 
+    os.makedirs(DATA_DIR, exist_ok=True)
     init_db()
-    log_system_status("RUNNING", "Pipeline started")
+
+    write_health(
+        "RUNNING",
+        "Tender scan started.",
+    )
 
     auditor = IntelligentAuditor()
 
-    valid_tenders: list[dict] = []
-    seen_keys = set()
-    source_errors = []
+    all_verified_tenders = []
+    source_failures = []
+    source_summary = []
 
-    for source_name, source_value in SOURCES.items():
-        print(f"\n[SCAN] Source: {source_name}")
-        print(f"[SCAN] Query/URL: {source_value}")
+    for category, search_query in SEARCHES.items():
+        print(f"\n[SEARCH] Category: {category}")
+        print(f"[SEARCH] Query: {search_query}")
 
         try:
-            # Your scraper may accept source name or a query/URL.
-            # We first use source_name because the Tavily scraper maps it to category query.
-            raw_content = fetch_tender_sources(source_name)
-
-            if not raw_content:
-                error = f"{source_name}: empty response"
-                source_errors.append(error)
-                print(f"[WARNING] {error}")
-                continue
-
-            if str(raw_content).startswith("ERROR"):
-                error = f"{source_name}: {raw_content[:250]}"
-                source_errors.append(error)
-                print(f"[WARNING] {error}")
-                continue
-
-            if len(raw_content) < 150:
-                error = f"{source_name}: response too short ({len(raw_content)} chars)"
-                source_errors.append(error)
-                print(f"[WARNING] {error}")
-                continue
-
-            print(f"[SCAN] Retrieved {len(raw_content)} characters.")
-
-            # Auditor analyzes actual returned web content.
-            extracted = auditor.analyze_page(
-                raw_content=raw_content,
-                source_url=str(source_value)
+            documents = fetch_tender_sources(
+                search_query=search_query,
+                max_results=TAVILY_RESULTS_PER_CATEGORY,
             )
 
-            if not extracted:
-                print("[AUDIT] No matching open tenders found in this source.")
+            print(f"[SEARCH] Tavily returned {len(documents)} document(s).")
+
+            if not documents:
+                source_summary.append(
+                    f"{category}: search returned zero documents."
+                )
                 continue
 
-            print(f"[AUDIT] Auditor returned {len(extracted)} possible tenders.")
+            category_count = 0
 
-            for item in extracted:
-                if not isinstance(item, dict):
-                    continue
+            for document in documents:
+                document_url = document["url"]
+                document_content = document["content"]
 
-                tender = normalize_tender(item, source_name)
+                print(f"[AUDIT] Checking: {document_url}")
 
-                if not tender:
-                    continue
-
-                # Prevent duplicates in the same run.
-                key = (
-                    tender["title"].lower().strip(),
-                    tender["source_url"].lower().strip()
+                extracted = auditor.analyze_document(
+                    document_content=document_content,
+                    document_url=document_url,
+                    target_category=category,
                 )
 
-                if key in seen_keys:
-                    continue
+                for tender in extracted:
+                    all_verified_tenders.append(tender)
+                    category_count += 1
 
-                seen_keys.add(key)
-                valid_tenders.append(tender)
+            source_summary.append(
+                f"{category}: {category_count} verified tender(s)."
+            )
 
-                # Save to SQLite too, but JSON is the Streamlit Cloud source of truth.
-                try:
-                    db_object = SimpleNamespace(
-                        title=tender["title"],
-                        source_url=tender["source_url"],
-                        category=tender["category"],
-                        closing_date=tender["closing_date"],
-                        issued_by=tender["issued_by"],
-                        qualification_criteria=tender["qualification_criteria"],
-                        eligibility_status=tender["eligibility_status"],
-                        is_net_cost=tender["is_net_cost"],
-                        is_open_now=tender["is_open_now"],
-                        extraction_confidence=tender["extraction_confidence"]
-                    )
-                    save_tender(db_object)
-                except Exception as db_error:
-                    # Do not lose genuine JSON output just because SQLite has an issue.
-                    print(f"[WARNING] SQLite save issue: {db_error}")
+        except Exception as error:
+            failure = f"{category}: {type(error).__name__}: {error}"
+            source_failures.append(failure)
+            source_summary.append(failure)
 
-        except Exception as source_error:
-            message = f"{source_name}: {type(source_error).__name__}: {source_error}"
-            source_errors.append(message)
-            print(f"[ERROR] {message}")
+            print(f"[ERROR] {failure}")
 
-    # Always write JSON, even when zero results occur.
-    # This proves when the last scan happened and prevents stale fake data.
-    save_json(valid_tenders)
+    verified_tenders = deduplicate(all_verified_tenders)
 
-    completed_at = datetime.now(timezone.utc)
-    duration = int((completed_at - start_time).total_seconds())
+    # Save each verified tender in local SQLite audit storage.
+    for tender in verified_tenders:
+        try:
+            save_tender(tender)
+        except Exception as error:
+            print(
+                f"[DATABASE WARNING] Could not save SQLite record "
+                f"for {tender.get('title', 'Unknown')}: {error}"
+            )
 
-    if source_errors and not valid_tenders:
-        status_message = (
-            f"Completed with warnings. Found 0 matching tenders. "
-            f"Source errors: {' | '.join(source_errors[:3])}"
+    # This JSON is the only dashboard data source.
+    # No fake records are added here.
+    live_payload = {
+        "data_source": "LIVE_FETCHED_DATA",
+        "generated_at": utc_now(),
+        "started_at": started_at,
+        "record_count": len(verified_tenders),
+        "tenders": verified_tenders,
+        "source_summary": source_summary,
+    }
+
+    write_json(LIVE_TENDERS_FILE, live_payload)
+
+    # If every category failed, this is a true system failure.
+    if len(source_failures) == len(SEARCHES):
+        message = (
+            "Pipeline failed: all live data sources failed. "
+            + " | ".join(source_failures)
         )
-        log_system_status("WARNING", status_message)
+
+        write_health(
+            "FAILED",
+            message,
+            source_summary,
+        )
+
+        send_alert(message, severity="CRITICAL")
+        raise RuntimeError(message)
+
+    # Zero verified tenders is NOT automatically a system failure.
+    # It may mean all results were irrelevant, expired, Net Cost,
+    # or lacked a verifiable closing date.
+    if len(verified_tenders) == 0:
+        message = (
+            "Scan completed successfully, but no verified current tenders "
+            "matched the strict rules."
+        )
+
+        write_health(
+            "SUCCESS_ZERO_RESULTS",
+            message,
+            source_summary,
+        )
+
     else:
-        status_message = (
-            f"Pipeline completed. Found {len(valid_tenders)} valid real tenders "
-            f"in {duration}s."
+        message = (
+            f"Scan completed successfully. "
+            f"{len(verified_tenders)} verified current tender(s) found."
         )
-        log_system_status("RUNNING", status_message)
 
-    print("\n" + "=" * 65)
-    print(status_message)
-    print("=" * 65)
+        write_health(
+            "SUCCESS",
+            message,
+            source_summary,
+        )
 
-    return len(valid_tenders)
+    print("\n" + "=" * 72)
+    print(message)
+    print(f"Real data saved to: {LIVE_TENDERS_FILE}")
+    print("=" * 72)
+
+    return len(verified_tenders)
