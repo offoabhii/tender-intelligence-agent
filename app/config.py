@@ -1,7 +1,6 @@
 SEARCH_QUERIES = {
-    "Charging point operations": ["EV charging station operation tender site:gem.gov.in", "EV charging point operation maintenance tender"],
-    "Solar": ["solar rooftop power plant tender site:gem.gov.in open", "solar installation tender government"],
-    "Bus operations (gross cost only)": ["bus operations gross cost contract GCC tender site:gem.gov.in", "electric bus gross cost basis operation tender"],
-    "Bus body building": ["bus body building fabrication tender site:gem.gov.in", "bus body construction tender STU"]
+    "Charging point operations": ["EV charging operation tender site:gov.in"],
+    "Solar": ["solar rooftop tender site:gov.in"],
+    "Bus operations (gross cost only)": ["bus operations gross cost contract tender site:gov.in"],
+    "Bus body building": ["bus body building tender site:gov.in"]
 }
-STATIC_SOURCES = []
