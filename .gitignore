@@ -1,24 +1,25 @@
-# Secrets: NEVER commit this file
+# Never upload secret keys
 .env
 
 # Python cache
 __pycache__/
 *.pyc
 *.pyo
-*.pyd
 
 # Virtual environments
 venv/
 .venv/
 
-# IDE / OS
+# IDE files
 .vscode/
 .idea/
+
+# OS files
 .DS_Store
 Thumbs.db
 
-# Local runtime logs
+# Logs
 *.log
 
-# Keep generated real JSON and database tracked.
-# Do NOT ignore data/live_tenders.json or data/health.json.
+# Keep data/live_tenders.json and data/health.json tracked.
+# Do not add data/ here.
