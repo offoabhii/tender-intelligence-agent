@@ -1,74 +1,53 @@
-import os
-from sqlalchemy import create_engine, Column, String, Boolean, DateTime, Text, Integer
-from sqlalchemy.orm import declarative_base, sessionmaker
+import sqlite3
 from datetime import datetime
+DB_FILE = "tenders.db"
 
-DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///tenders.db")
-engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False} if "sqlite" in DATABASE_URL else {})
-SessionLocal = sessionmaker(bind=engine)
-Base = declarative_base()
+class TenderRecordObj:
+    def __init__(self, id, title, source_url, category, closing_date, issued_by, qualification_criteria, eligibility_status, is_net_cost, is_open_now, extraction_confidence, found_at):
+        self.id=id; self.title=title; self.source_url=source_url; self.category=category
+        self.closing_date=closing_date; self.issued_by=issued_by; self.qualification_criteria=qualification_criteria
+        self.eligibility_status=eligibility_status; self.is_net_cost=bool(is_net_cost); self.is_open_now=bool(is_open_now)
+        self.extraction_confidence=extraction_confidence; self.found_at=found_at
 
-class TenderRecord(Base):
-    __tablename__ = "tenders"
-    id = Column(Integer, primary_key=True, index=True)
-    title = Column(String, nullable=False)
-    source_url = Column(String)
-    category = Column(String)
-    closing_date = Column(String, default="NOT SURE")
-    issued_by = Column(String, default="NOT SURE")
-    qualification_criteria = Column(Text, default="NOT SURE")
-    eligibility_status = Column(Text, default="NOT SURE")
-    is_net_cost = Column(Boolean, default=False)
-    is_open_now = Column(Boolean, default=False)
-    extraction_confidence = Column(String, default="NOT SURE")
-    found_at = Column(DateTime, default=datetime.utcnow)
+class SystemLogObj:
+    def __init__(self, id, timestamp, status, message):
+        self.id=id; self.timestamp=timestamp; self.status=status; self.message=message
 
-class SystemLog(Base):
-    __tablename__ = "system_logs"
-    id = Column(Integer, primary_key=True)
-    timestamp = Column(DateTime, default=datetime.utcnow)
-    status = Column(String)
-    message = Column(Text)
+def get_conn():
+    conn=sqlite3.connect(DB_FILE); conn.row_factory=sqlite3.Row; return conn
 
 def init_db():
-    Base.metadata.create_all(bind=engine)
+    conn=get_conn(); cur=conn.cursor()
+    cur.execute("CREATE TABLE IF NOT EXISTS tenders (id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT NOT NULL, source_url TEXT, category TEXT, closing_date TEXT DEFAULT 'NOT SURE', issued_by TEXT DEFAULT 'NOT SURE', qualification_criteria TEXT DEFAULT 'NOT SURE', eligibility_status TEXT DEFAULT 'NOT SURE', is_net_cost INTEGER DEFAULT 0, is_open_now INTEGER DEFAULT 0, extraction_confidence TEXT DEFAULT 'NOT SURE', found_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)")
+    cur.execute("CREATE TABLE IF NOT EXISTS system_logs (id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP, status TEXT, message TEXT)")
+    conn.commit(); conn.close()
 
 def save_tender(t):
-    s = SessionLocal()
-    exists = s.query(TenderRecord).filter_by(title=t.title, source_url=t.source_url).first()
-    if not exists:
-        rec = TenderRecord(
-            title=t.title, source_url=t.source_url, category=t.category,
-            closing_date=t.closing_date, issued_by=t.issued_by,
-            qualification_criteria=t.qualification_criteria,
-            eligibility_status=t.eligibility_status,
-            is_net_cost=t.is_net_cost, is_open_now=t.is_open_now,
-            extraction_confidence=t.extraction_confidence
-        )
-        s.add(rec)
-        s.commit()
-    s.close()
+    conn=get_conn(); cur=conn.cursor()
+    cur.execute("SELECT id FROM tenders WHERE title=? AND source_url=?", (t.title, t.source_url))
+    if cur.fetchone() is None:
+        cur.execute("INSERT INTO tenders (title, source_url, category, closing_date, issued_by, qualification_criteria, eligibility_status, is_net_cost, is_open_now, extraction_confidence, found_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)", (t.title, t.source_url, t.category, t.closing_date, t.issued_by, t.qualification_criteria, t.eligibility_status, int(t.is_net_cost), int(t.is_open_now), t.extraction_confidence, datetime.utcnow()))
+        conn.commit()
+    conn.close()
 
 def get_all_open_tenders():
-    s = SessionLocal()
-    results = s.query(TenderRecord).filter_by(is_open_now=True).order_by(TenderRecord.found_at.desc()).all()
-    s.close()
-    return results
+    conn=get_conn(); cur=conn.cursor()
+    cur.execute("SELECT * FROM tenders WHERE is_open_now=1 ORDER BY found_at DESC")
+    rows=cur.fetchall(); conn.close()
+    res=[]
+    for r in rows:
+        try: ts=datetime.fromisoformat(r["found_at"])
+        except: ts=datetime.utcnow()
+        res.append(TenderRecordObj(r["id"], r["title"], r["source_url"], r["category"], r["closing_date"], r["issued_by"], r["qualification_criteria"], r["eligibility_status"], r["is_net_cost"], r["is_open_now"], r["extraction_confidence"], ts))
+    return res
 
 def get_logs(limit=20):
-    s = SessionLocal()
-    logs = s.query(SystemLog).order_by(SystemLog.timestamp.desc()).limit(limit).all()
-    s.close()
-    return logs
+    conn=get_conn(); cur=conn.cursor()
+    cur.execute("SELECT * FROM system_logs ORDER BY timestamp DESC LIMIT ?", (limit,))
+    rows=cur.fetchall(); conn.close()
+    return [SystemLogObj(r["id"], datetime.fromisoformat(r["timestamp"]) if isinstance(r["timestamp"],str) else r["timestamp"], r["status"], r["message"]) for r in rows]
 
 def log_system_status(status: str, msg=""):
-    s = SessionLocal()
-    log = SystemLog(status=status, message=msg)
-    s.add(log)
-    s.commit()
-    s.close()
-    try:
-        with open("system_health.log", "a", encoding="utf-8") as f:
-            f.write(f"{datetime.utcnow()} | {status} | {msg}\n")
-    except:
-        pass
+    conn=get_conn(); cur=conn.cursor()
+    cur.execute("INSERT INTO system_logs (status, message, timestamp) VALUES (?,?,?)", (status, msg, datetime.utcnow()))
+    conn.commit(); conn.close()
