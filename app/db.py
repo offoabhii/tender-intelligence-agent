@@ -1,6 +1,7 @@
-import sqlite3
+import os, sqlite3
 from datetime import datetime
-DB_FILE = "tenders.db"
+ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+DB_FILE = os.path.join(ROOT_DIR, "tenders.db")
 
 class TenderRecordObj:
     def __init__(self, id, title, source_url, category, closing_date, issued_by, qualification_criteria, eligibility_status, is_net_cost, is_open_now, extraction_confidence, found_at):
@@ -45,7 +46,12 @@ def get_logs(limit=20):
     conn=get_conn(); cur=conn.cursor()
     cur.execute("SELECT * FROM system_logs ORDER BY timestamp DESC LIMIT ?", (limit,))
     rows=cur.fetchall(); conn.close()
-    return [SystemLogObj(r["id"], datetime.fromisoformat(r["timestamp"]) if isinstance(r["timestamp"],str) else r["timestamp"], r["status"], r["message"]) for r in rows]
+    logs=[]
+    for r in rows:
+        try: ts=datetime.fromisoformat(r["timestamp"])
+        except: ts=datetime.utcnow()
+        logs.append(SystemLogObj(r["id"], ts, r["status"], r["message"]))
+    return logs
 
 def log_system_status(status: str, msg=""):
     conn=get_conn(); cur=conn.cursor()
