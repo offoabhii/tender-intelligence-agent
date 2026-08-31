@@ -4,34 +4,41 @@ on:
     - cron: '0 */6 * * *'
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   run:
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
         with:
           python-version: '3.11'
-      - name: Install dependencies
+
+      - name: Install deps
         run: |
           python -m pip install --upgrade pip
-          pip install streamlit pydantic python-dotenv requests beautifulsoup4 lxml pandas duckduckgo-search google-generativeai openai tavily-python || pip install streamlit pydantic python-dotenv requests beautifulsoup4 lxml pandas
-      - name: Run Agent Pipeline
+          pip install -r requirements.txt
+
+      - name: Run Pipeline - REAL gov data
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          TAVILY_API_KEY: ${{ secrets.TAVILY_API_KEY }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           OPENAI_BASE_URL: ${{ secrets.OPENAI_BASE_URL }}
-          TAVILY_API_KEY: ${{ secrets.TAVILY_API_KEY }}
         run: |
           python run_agent.py
           ls -lh tenders.db system_health.log || true
-      - name: Save DB back to repo
+
+      - name: Commit DB back to repo
         if: always()
         run: |
           git config --global user.name "tender-bot"
           git config --global user.email "bot@tender.local"
           git add -f tenders.db system_health.log || true
-          git commit -m "auto: update tenders [skip ci]" || echo "No changes"
-          git push || echo "Push failed - check write permission"
+          git commit -m "auto: update tenders [skip ci]" || echo "no changes"
+          git push || echo "push failed - check Settings -> Actions -> Read and write"
