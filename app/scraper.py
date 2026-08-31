@@ -1,27 +1,55 @@
-import os, requests, random
+import os, requests, random, re
 from bs4 import BeautifulSoup
 USER_AGENTS = ["Mozilla/5.0 TenderAgent/1.0"]
 
+def fetch_via_jina(url: str) -> str:
+    try:
+        jina_url = f"https://r.jina.ai/{url}"
+        r = requests.get(jina_url, timeout=45, headers={"X-Return-Format": "markdown"})
+        if r.status_code==200 and len(r.text)>300:
+            return r.text[:15000]
+    except Exception as e:
+        print(f"Jina fail {e}")
+    return ""
+
 def fetch_text(url: str) -> str:
+    txt = fetch_via_jina(url)
+    if len(txt)>300: return txt
     try:
         headers = {"User-Agent": random.choice(USER_AGENTS)}
         resp = requests.get(url, headers=headers, timeout=30)
         soup = BeautifulSoup(resp.text, "lxml")
         for tag in soup(["script","style","nav","footer","header"]): tag.decompose()
-        text = "\n".join([l.strip() for l in soup.get_text("\n").splitlines() if l.strip()])
-        if len(text) < 200: return f"SCRAPE_FAILED_JS: {text[:200]}"
-        return text[:15000]
+        cleaned = "\n".join([l.strip() for l in soup.get_text("\n").splitlines() if l.strip()])
+        if len(cleaned)<200: return f"SCRAPE_FAILED_JS: {cleaned[:200]}"
+        return cleaned[:15000]
     except Exception as e:
         return f"SCRAPE_FAILED: {e}"
+
+def scrape_via_jina(url: str):
+    text = fetch_via_jina(url)
+    results=[]
+    for line in text.splitlines():
+        low=line.lower()
+        if any(k in low for k in ["solar","bus","charging","ev","gross cost","gcc","body building","electric"]):
+            m = re.search(r'\[([^\]]+)\]\((https?://[^\)]+)\)', line)
+            if m:
+                title, link = m.group(1), m.group(2)
+            else:
+                title, link = line.strip()[:250], url
+            if len(title)>20:
+                results.append({"url": link, "title": title, "content": line})
+    print(f"Jina {url[:40]} found {len(results)}")
+    return results[:20]
 
 def search_free_duckduckgo_enriched(query: str, max_results=5):
     try:
         from duckduckgo_search import DDGS
         with DDGS() as ddgs:
             results = list(ddgs.text(query, max_results=max_results))
-        return [{"url": r.get("href"), "title": r.get("title",""), "content": r.get("body","")} for r in results if r.get("href")]
+        return [{"url": r.get("href"), "title": r.get("title",""), "content": r.get("body","")} for r in results if r.get("href") and "gov.in" in r.get("href","")]
     except Exception as e:
-        print(f"DDG fail: {e}"); return []
+        print(f"DDG fail {e}"); return []
 
 def search_with_tavily_enriched(query: str, max_results=5):
     api_key = os.getenv("TAVILY_API_KEY")
@@ -34,43 +62,3 @@ def search_with_tavily_enriched(query: str, max_results=5):
         return [{"url": r["url"], "title": r.get("title",""), "content": r.get("content","")} for r in res.get("results",[])]
     except:
         return search_free_duckduckgo_enriched(query, max_results)
-
-def scrape_etenders_direct():
-    """REAL HTML - no JS - always works"""
-    url = "https://etenders.gov.in/eprocure/app?page=FrontEndLatestActiveTenders&service=page"
-    try:
-        r = requests.get(url, headers={"User-Agent": random.choice(USER_AGENTS)}, timeout=30)
-        soup = BeautifulSoup(r.text, "lxml")
-        results=[]
-        for tr in soup.find_all("tr"):
-            txt = tr.get_text(" ", strip=True)
-            if len(txt)<40: continue
-            low=txt.lower()
-            if any(k in low for k in ["solar","bus","charging","ev","gross cost","body building","electric"]):
-                a=tr.find("a", href=True)
-                link=a["href"] if a else url
-                if link.startswith("/"): link="https://etenders.gov.in"+link
-                if not link.startswith("http"): link=url
-                results.append({"url": link, "title": txt[:250], "content": txt})
-        print(f"etenders found {len(results)}")
-        return results[:20]
-    except Exception as e:
-        print(f"etenders fail {e}"); return []
-
-def scrape_cppp_direct():
-    url = "https://eprocure.gov.in/cppp/latestactivetenders"
-    try:
-        r = requests.get(url, headers={"User-Agent": random.choice(USER_AGENTS)}, timeout=30)
-        soup = BeautifulSoup(r.text, "lxml")
-        results=[]
-        for tr in soup.find_all("tr"):
-            txt=tr.get_text(" ", strip=True)
-            if len(txt)>40 and any(k in txt.lower() for k in ["solar","bus","charging","ev","gross cost","body building"]):
-                a=tr.find("a", href=True)
-                link=a["href"] if a else url
-                if link.startswith("/"): link="https://eprocure.gov.in"+link
-                results.append({"url": link, "title": txt[:250], "content": txt})
-        print(f"cppp found {len(results)}")
-        return results[:20]
-    except Exception as e:
-        print(f"cppp fail {e}"); return []
