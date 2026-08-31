@@ -1,22 +1,65 @@
 """
-Config - Final Working Version
+Tender Intelligence Agent Configuration
+
+Only these four business categories are allowed.
+All other tenders are rejected.
 """
-from datetime import datetime
 
-# REAL SEARCH QUERIES (Proven to return results on Tavily)
-SOURCES = {
-    "charging": "site:nic.in OR site:gov.in electric vehicle charging station operation maintenance tender 2025 open",
-    "solar": "site:mnre.gov.in OR site:nic.in solar rooftop installation O&M tender open 2025", 
-    "bus_ops": "site:hry.nic.in OR site:tenders.gov.in bus operations gross cost contract transport tender open 2025",
-    "bus_body": "site:acma.goa.gov.in OR site:tenders.gov.in bus body building fabrication supply tender 2025"
-}
+from datetime import date
 
+TODAY = date.today()
+CURRENT_YEAR = TODAY.year
+
+# The employer's approved categories.
 CATEGORIES_ALLOWED = [
     "Charging point operations",
-    "Solar", 
+    "Solar",
     "Bus operations (gross cost only)",
-    "Bus body building"
+    "Bus body building",
 ]
 
-REJECT_NET_COST_CATEGORIES = ["Bus operations (gross cost only)"]
-TODAY_DATE = datetime.now().strftime("%Y-%m-%d")
+# A Net Cost tender is never relevant for Bus Operations.
+BUS_OPERATIONS_CATEGORY = "Bus operations (gross cost only)"
+
+# IMPORTANT:
+# This profile is intentionally conservative.
+# If your company's actual capability details are unknown,
+# the auditor must output NOT SURE instead of guessing eligibility.
+COMPANY_PROFILE = """
+Company eligibility information is not fully provided.
+
+Therefore:
+- Do NOT say ELIGIBLE unless source requirements clearly match the profile.
+- If eligibility cannot be proven, return NOT SURE.
+- Never invent fleet size, turnover, certifications, past experience,
+  registration, state licenses, or technical qualifications.
+"""
+
+# Live Tavily queries.
+# These are searches, not fake portal URLs.
+# Tavily returns actual result URLs that are saved with every tender.
+SEARCHES = {
+    "Charging point operations": (
+        f'India government tender "{CURRENT_YEAR}" '
+        '"EV charging station" operation maintenance O&M '
+        'open tender site:gov.in OR site:nic.in'
+    ),
+    "Solar": (
+        f'India government tender "{CURRENT_YEAR}" '
+        'solar rooftop solar power plant installation operation maintenance '
+        'open tender site:gov.in OR site:nic.in'
+    ),
+    "Bus operations (gross cost only)": (
+        f'India government tender "{CURRENT_YEAR}" '
+        '"bus operations" "gross cost" contract open tender '
+        'site:gov.in OR site:nic.in'
+    ),
+    "Bus body building": (
+        f'India government tender "{CURRENT_YEAR}" '
+        '"bus body" building fabrication manufacture supply open tender '
+        'site:gov.in OR site:nic.in'
+    ),
+}
+
+# Tavily free-tier friendly settings.
+TAVILY_RESULTS_PER_CATEGORY = 5
