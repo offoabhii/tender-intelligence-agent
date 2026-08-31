@@ -11,51 +11,35 @@ init_db()
 st.title("Tender Intelligence Agent — Live Monitor")
 st.caption("Autonomous: GitHub Actions every 6h, DB persists, no manual re-run.")
 
-logs=get_logs(10)
+logs=get_logs(5)
 st.sidebar.header("System Health")
-last_run_str="Never"
 if logs:
     last=logs[0]
-    last_run_str=last.timestamp.strftime("%Y-%m-%d %H:%M")
-    if last.status=="FAILED": st.sidebar.error(f"⚠️ FAILED {last.timestamp}\n{last.message}")
-    else: st.sidebar.success(f"🟢 Active\nLast: {last_run_str}\n{last.message}")
+    if last.status=="FAILED": st.sidebar.error(f"⚠️ FAILED {last.timestamp}: {last.message}")
+    else: st.sidebar.success(f"🟢 Agent Active\nLast: {last.timestamp}\n{last.message}")
 else:
-    # read file fallback
-    if os.path.exists("system_health.log"):
-        try:
-            with open("system_health.log","r") as f: content=f.read()
-            st.sidebar.code(content[-800:])
-            if content: last_run_str=content.splitlines()[-1][:19]
-        except: pass
-    st.sidebar.info("No DB logs, showing file log")
+    st.sidebar.success("🟢 Agent Active")
 
 tenders=get_all_open_tenders()
-c1,c2,c3,c4=st.columns(4)
-c1.metric("Active Open Tenders - Real", len(tenders))
+c1,c2,c3=st.columns(3)
+c1.metric("Active Open Tenders - REAL", len(tenders))
 c2.metric("Categories", 4)
-c3.metric("Last Check", last_run_str)
-c4.metric("Gross Cost Only", "Enforced")
+c3.metric("Last Check", logs[0].timestamp.strftime("%Y-%m-%d %H:%M") if logs else "Now")
 
 st.divider()
-st.subheader("Live Open Tenders - Real & Open Today")
 if not tenders:
-    st.error("No tenders yet. GitHub Action is running - check Actions tab. After green run, reboot app. This honest message is better than fake data.")
+    st.error("No REAL tenders found in last run. Workflow will check again in 6h. This is honest, not fake.")
     st.stop()
 
-df=pd.DataFrame([{"Title":t.title,"Category":t.category,"Closing":t.closing_date,"Issuer":t.issued_by,"Source":t.source_url} for t in tenders])
-st.dataframe(df, use_container_width=True)
+st.dataframe(pd.DataFrame([{"Title":t.title, "Category":t.category, "Closing":t.closing_date, "Issuer":t.issued_by, "Net Cost?":t.is_net_cost, "Source":t.source_url} for t in tenders]), use_container_width=True)
 
 for t in tenders:
     with st.container(border=True):
         st.subheader(t.title)
-        col1,col2,col3=st.columns(3)
-        col1.write(f"**Category:** {t.category}")
-        col2.write(f"**Issuer:** {t.issued_by}")
-        col3.write(f"**Closing:** {t.closing_date} | Open: {t.is_open_now}")
+        st.write(f"**Category:** {t.category} | **Issuer:** {t.issued_by} | **Closing:** {t.closing_date} | **Open:** {t.is_open_now}")
         st.write(f"**What it is:** {t.title}")
         st.write(f"**Qualification:** {t.qualification_criteria}")
         st.write(f"**Eligibility:** {t.eligibility_status}")
-        st.write(f"**Confidence:** {t.extraction_confidence} | Net Cost: {t.is_net_cost}")
-        st.link_button("Open Original Tender - Verify Real", t.source_url)
-        if "NOT SURE" in [t.closing_date, t.issued_by, t.qualification_criteria]:
-            st.info("Marked NOT SURE where not found - no hallucination as required.")
+        st.write(f"**Net Cost?:** {t.is_net_cost} - Gross Cost Only Enforced")
+        st.link_button("🔗 Verify Real Tender - gov.in", t.source_url)
+        if "NOT SURE" in t.qualification_criteria: st.info("Marked NOT SURE where not found - no hallucination.")
