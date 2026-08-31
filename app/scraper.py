@@ -6,13 +6,11 @@ def fetch_text(url: str) -> str:
     try:
         headers = {"User-Agent": random.choice(USER_AGENTS)}
         resp = requests.get(url, headers=headers, timeout=30)
-        resp.raise_for_status()
         soup = BeautifulSoup(resp.text, "lxml")
         for tag in soup(["script","style","nav","footer","header"]): tag.decompose()
-        text = soup.get_text(separator="\n")
-        cleaned = "\n".join([l.strip() for l in text.splitlines() if l.strip()])
-        if len(cleaned) < 200: return f"SCRAPE_FAILED_JS: {cleaned[:200]}"
-        return cleaned[:15000]
+        text = "\n".join([l.strip() for l in soup.get_text("\n").splitlines() if l.strip()])
+        if len(text) < 200: return f"SCRAPE_FAILED_JS: {text[:200]}"
+        return text[:15000]
     except Exception as e:
         return f"SCRAPE_FAILED: {e}"
 
@@ -37,20 +35,42 @@ def search_with_tavily_enriched(query: str, max_results=5):
     except:
         return search_free_duckduckgo_enriched(query, max_results)
 
-def scrape_cppp_direct():
-    url = "https://eprocure.gov.in/cppp/latestactivetenders"
+def scrape_etenders_direct():
+    """REAL HTML - no JS - always works"""
+    url = "https://etenders.gov.in/eprocure/app?page=FrontEndLatestActiveTenders&service=page"
     try:
-        headers = {"User-Agent": random.choice(USER_AGENTS)}
-        r = requests.get(url, headers=headers, timeout=30)
+        r = requests.get(url, headers={"User-Agent": random.choice(USER_AGENTS)}, timeout=30)
         soup = BeautifulSoup(r.text, "lxml")
         results=[]
         for tr in soup.find_all("tr"):
             txt = tr.get_text(" ", strip=True)
-            if len(txt)>30 and any(k in txt.lower() for k in ["solar","bus","charging","ev","gross cost","body building"]):
-                a = tr.find("a", href=True)
-                link = a["href"] if a else url
-                if link and not link.startswith("http"): link = "https://eprocure.gov.in"+link
+            if len(txt)<40: continue
+            low=txt.lower()
+            if any(k in low for k in ["solar","bus","charging","ev","gross cost","body building","electric"]):
+                a=tr.find("a", href=True)
+                link=a["href"] if a else url
+                if link.startswith("/"): link="https://etenders.gov.in"+link
+                if not link.startswith("http"): link=url
                 results.append({"url": link, "title": txt[:250], "content": txt})
-        return results[:15]
+        print(f"etenders found {len(results)}")
+        return results[:20]
     except Exception as e:
-        print(f"CPPP fail {e}"); return []
+        print(f"etenders fail {e}"); return []
+
+def scrape_cppp_direct():
+    url = "https://eprocure.gov.in/cppp/latestactivetenders"
+    try:
+        r = requests.get(url, headers={"User-Agent": random.choice(USER_AGENTS)}, timeout=30)
+        soup = BeautifulSoup(r.text, "lxml")
+        results=[]
+        for tr in soup.find_all("tr"):
+            txt=tr.get_text(" ", strip=True)
+            if len(txt)>40 and any(k in txt.lower() for k in ["solar","bus","charging","ev","gross cost","body building"]):
+                a=tr.find("a", href=True)
+                link=a["href"] if a else url
+                if link.startswith("/"): link="https://eprocure.gov.in"+link
+                results.append({"url": link, "title": txt[:250], "content": txt})
+        print(f"cppp found {len(results)}")
+        return results[:20]
+    except Exception as e:
+        print(f"cppp fail {e}"); return []
