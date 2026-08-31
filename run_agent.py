@@ -1,26 +1,23 @@
 """
-Main entry point for the Tender Intelligence Agent.
+GitHub Actions entry point.
 
-This file is executed by GitHub Actions:
+Run locally:
     python run_agent.py
 """
 
 import sys
+
 from app.agent_runner import run_pipeline
 
 
 if __name__ == "__main__":
     try:
-        count = run_pipeline()
+        total = run_pipeline()
+        print(f"\nPipeline finished. Verified tender count: {total}")
 
-        print(f"\nPipeline completed successfully.")
-        print(f"Real tenders saved: {count}")
-
-        # Important:
-        # Zero results is NOT a program crash.
-        # It may simply mean no matching currently-open tenders were found.
+        # A zero result is a valid successful scan.
         sys.exit(0)
 
     except Exception as error:
-        print(f"\nPIPELINE ERROR: {error}")
+        print(f"\nPIPELINE FAILED: {error}")
         sys.exit(1)
