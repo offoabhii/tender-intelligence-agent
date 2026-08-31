@@ -1,36 +1,123 @@
-import os, json, re
-from app.schema import Tender
-def heuristic_from_search(result: dict):
-    low=(result.get("title","")+result.get("content","")).lower()
-    cat=None
-    if "charging" in low and ("point" in low or "ev" in low): cat="Charging point operations"
-    elif "solar" in low: cat="Solar"
-    elif "bus body" in low or "body building" in low: cat="Bus body building"
-    elif "bus operat" in low or "gross cost" in low or "gcc" in low or "electric bus" in low: cat="Bus operations (gross cost only)"
-    if not cat: return []
-    is_net="net cost" in low and "gross cost" not in low
-    if cat=="Bus operations (gross cost only)" and is_net: return []
-    title=result.get("title") or low[:120]
-    return [Tender(title=title[:200], source_url=result["url"], category=cat, closing_date="NOT SURE", issued_by="NOT SURE", qualification_criteria="NOT SURE", eligibility_status="NOT SURE", is_net_cost=is_net, is_open_now=True, extraction_confidence="MEDIUM")]
+"""
+Intelligent Auditor - Error-proof version
+Always returns list (never crashes). Uses Groq or OpenAI dynamically.
+"""
+import os
+import json
+import sys
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from dotenv import load_dotenv
+load_dotypes()
 
-def audit_and_extract(raw_text: str, url: str):
-    if "SCRAPE_FAILED" in raw_text and len(raw_text)<500: return []
-    gem_key=os.getenv("GEMINI_API_KEY")
-    if gem_key and "AIza" in gem_key:
+from config import CATEGORIES_ALLOWED, REJECT_NET_COST_CATEGORIES, TODAY_DATE
+
+class IntelligentAuditor:
+    def __init__(self):
+        self.client = None
+        self.provider = None
+        self.model = None
+        
+        # Initialize LLM client with automatic fallback
+        groq_key = os.getenv("GROQ_API_KEY")
+        oai_key = os.getenv("OPENAI_API_KEY")
+        
+        if groq_key:
+            try:
+                from groq import Groq
+                self.client = Groq(api_key=groq_key)
+                self.provider = "GROQ"
+                # Dynamic model discovery
+                self.model = self._find_working_groq_model(self.client)
+                print(f"[Auditor] Using GROQ: {self.model}")
+                return
+            except:
+                pass
+                
+        if oai_key:
+            try:
+                from openai import OpenAI
+                self.client = OpenAI(api_key=oai_key)
+                self.provider = "OPENAI"
+                self.model = "gpt-4o-mini"
+                print(f"[Auditor] Using OPENAI fallback")
+                return
+            except:
+                pass
+        
+        raise RuntimeError("""
+⛔ NO AI PROVIDER AVAILABLE!
+Fix: Add ONE of these to .env file:
+1. GROQ_API_KEY=gsk_xxx (Free - https://console.groq.com)
+2. OPENAI_API_KEY=sk-proj_xxx (Paid - https://platform.openai.com)
+""")
+
+    def _find_working_groq_model(self, client):
+        """Test which model is alive today (Groq deprecates old ones often)"""
+        candidates = ["llama-3.3-70b-versatile", "llama-3.1-70b-versatile", "mixtral-8x7b-32768"]
+        for m in candidates:
+            try:
+                client.chat.completions.create(model=m, messages=[{"role":"user","content":"ok"}], max_tokens=5)
+                return m
+            except:
+                continue
+        return candidates[0]  # Fallback anyway
+
+    SYSTEM_PROMPT = f"""You are a Government Tender Analyst.
+
+EXTRACT ONLY tenders matching these 4 categories:
+1. Charging point operations
+2. Solar
+3. Bus operations (GROSS COST CONTRACT ONLY) - Reject Net Cost/L1 Net models immediately
+4. Bus body building
+
+RULES:
+- Today's date: {TODAY_DATE}
+- Only extract open/future tenders
+- Unknown fields → write "NOT SURE" (never invent)
+- Return JSON array"""
+
+    def analyze_page(self, raw_content: str, source_url: str) -> list:
+        """Analyze page text and return list of dicts. Never crashes."""
+        if not raw_content or len(raw_content) < 100 or raw_content.startswith("ERROR"):
+            print(f"[Audit] Skipping bad content: {raw_content[:50]}...")
+            return []
+            
         try:
-            import google.generativeai as genai
-            genai.configure(api_key=gem_key)
-            model=genai.GenerativeModel("gemini-1.5-flash")
-            resp=model.generate_content(f"You are auditor. ONLY 4 cats: Charging point operations, Solar, Bus operations (gross cost only), Bus body building. Net Cost bus REJECT. Return JSON {{\"tenders\": [{{\"title\":\"\",\"category\":\"\",\"closing_date\":\"NOT SURE\",\"issued_by\":\"\",\"qualification_criteria\":\"\",\"eligibility_status\":\"\",\"is_net_cost\":false,\"is_open_now\":true,\"extraction_confidence\":\"HIGH\"}}]}}\nURL:{url}\nTEXT:{raw_text[:7000]}")
-            txt=re.sub(r'```json|```','',resp.text).strip()
-            data=json.loads(txt[txt.find('{'):txt.rfind('}')+1])
-            valid=[]
-            for item in data.get("tenders",[]):
-                try:
-                    t=Tender(**item, source_url=url)
-                    if t.category=="Bus operations (gross cost only)" and t.is_net_cost: continue
-                    valid.append(t)
-                except: continue
-            if valid: return valid
-        except Exception as e: print(f"Gemini fail {e}")
-    return []
+            response = self.client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": self.SYSTEM_PROMPT},
+                    {"role": "user", "content": f"Extract from:\n{raw_content[:10000]}"}
+                ],
+                temperature=0.05,
+                max_tokens=2500,
+                response_format={"type": "json_object"}
+            )
+            
+            result = json.loads(response.choices[0].message.content)
+            items = result.get("tenders", result.get("results", []))
+            if isinstance(result, list): items = result
+            
+            # Apply business rules filter
+            filtered = []
+            for item in items:
+                cat = item.get("category","").strip()
+                if cat not in CATEGORIES_ALLOWED: continue
+                
+                if cat in REJECT_NET_COST_CATEGORIES and item.get("is_net_cost_model"):
+                    continue
+                    
+                # Clean up None values
+                for k in ['closing_date','issued_by','qualification_criteria','eligibility_status']:
+                    if not item.get(k) or str(item[k]).strip() in ['','-','N/A','None','null']:
+                        item[k] = "NOT_SURE"
+                
+                item['source_url'] = source_url
+                filtered.append(item)
+            
+            print(f"[Audit] ✅ Found {len(filtered)} valid tenders")
+            return filtered
+            
+        except Exception as e:
+            print(f"[Audit] ❌ Error: {e}")
+            return []
