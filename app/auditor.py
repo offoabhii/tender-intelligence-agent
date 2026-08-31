@@ -1,7 +1,5 @@
 import os, json, re
 from app.schema import Tender
-SYSTEM_PROMPT = "You are STRICT auditor. ONLY 4 cats: Charging point operations, Solar, Bus operations (gross cost only), Bus body building. Net Cost bus -> REJECT. If not found write NOT SURE."
-
 def heuristic_from_search(result: dict):
     low=(result.get("title","")+result.get("content","")).lower()
     cat=None
@@ -23,7 +21,7 @@ def audit_and_extract(raw_text: str, url: str):
             import google.generativeai as genai
             genai.configure(api_key=gem_key)
             model=genai.GenerativeModel("gemini-1.5-flash")
-            resp=model.generate_content(f"{SYSTEM_PROMPT}\nURL:{url}\nTEXT:\n{raw_text[:7000]}\nReturn JSON {{\"tenders\": [{{\"title\":\"\",\"category\":\"\",\"closing_date\":\"NOT SURE\",\"issued_by\":\"\",\"qualification_criteria\":\"\",\"eligibility_status\":\"\",\"is_net_cost\":false,\"is_open_now\":true,\"extraction_confidence\":\"HIGH\"}}]}}")
+            resp=model.generate_content(f"You are auditor. ONLY 4 cats: Charging point operations, Solar, Bus operations (gross cost only), Bus body building. Net Cost bus REJECT. Return JSON {{\"tenders\": [{{\"title\":\"\",\"category\":\"\",\"closing_date\":\"NOT SURE\",\"issued_by\":\"\",\"qualification_criteria\":\"\",\"eligibility_status\":\"\",\"is_net_cost\":false,\"is_open_now\":true,\"extraction_confidence\":\"HIGH\"}}]}}\nURL:{url}\nTEXT:{raw_text[:7000]}")
             txt=re.sub(r'```json|```','',resp.text).strip()
             data=json.loads(txt[txt.find('{'):txt.rfind('}')+1])
             valid=[]
