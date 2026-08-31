@@ -1,44 +1,90 @@
+"""
+Tavily real-web search integration.
+
+Every result returned contains a real source URL.
+This module never creates sample/fake tender data.
+"""
+
 import os
 import requests
-from bs4 import BeautifulSoup
-import random
+from dotenv import load_dotenv
 
-USER_AGENTS = ["Mozilla/5.0 (Windows NT 10.0; Win64; x64) TenderAgent/1.0"]
+load_dotenv()
 
-def fetch_text(url: str) -> str:
+TAVILY_ENDPOINT = "https://api.tavily.com/search"
+
+
+def fetch_tender_sources(search_query: str, max_results: int = 5) -> list[dict]:
+    """
+    Search the web for current tender-related pages.
+
+    Returns:
+        [
+            {
+                "title": "...",
+                "url": "https://real-source-url",
+                "content": "content returned by Tavily"
+            }
+        ]
+    """
+
+    api_key = os.getenv("TAVILY_API_KEY", "").strip()
+
+    if not api_key:
+        raise RuntimeError(
+            "TAVILY_API_KEY is missing. Add it in .env and GitHub Secrets."
+        )
+
+    payload = {
+        "api_key": api_key,
+        "query": search_query,
+        "search_depth": "advanced",
+        "max_results": max_results,
+        "include_answer": False,
+        "include_raw_content": True,
+        "include_images": False,
+    }
+
     try:
-        headers = {"User-Agent": random.choice(USER_AGENTS)}
-        resp = requests.get(url, headers=headers, timeout=30)
-        resp.raise_for_status()
-        soup = BeautifulSoup(resp.text, "lxml")
-        for tag in soup(["script","style","nav","footer","header"]):
-            tag.decompose()
-        text = soup.get_text(separator="\n")
-        cleaned = "\n".join([l.strip() for l in text.splitlines() if l.strip()])
-        if len(cleaned) < 400:
-            return f"SCRAPE_FAILED_JS: Too little text from {url}"
-        return cleaned[:15000]
-    except Exception as e:
-        return f"SCRAPE_FAILED: {e}"
+        response = requests.post(
+            TAVILY_ENDPOINT,
+            json=payload,
+            timeout=45,
+        )
+    except requests.RequestException as error:
+        raise RuntimeError(f"Tavily connection error: {error}") from error
 
-def search_free_duckduckgo(query: str, max_results=5):
-    try:
-        from duckduckgo_search import DDGS
-        with DDGS() as ddgs:
-            results = list(ddgs.text(query, max_results=max_results))
-        return [r["href"] for r in results]
-    except Exception as e:
-        print(f"Free search failed: {e}")
-        return []
+    if response.status_code != 200:
+        raise RuntimeError(
+            f"Tavily API error {response.status_code}: {response.text[:500]}"
+        )
 
-def search_with_tavily(query: str, max_results=5):
-    api_key = os.getenv("TAVILY_API_KEY")
-    if not api_key or "tvly-" not in api_key:
-        return search_free_duckduckgo(query, max_results)
-    try:
-        from tavily import TavilyClient
-        client = TavilyClient(api_key=api_key)
-        res = client.search(query, max_results=max_results, search_depth="advanced")
-        return [r["url"] for r in res.get("results", [])]
-    except:
-        return search_free_duckduckgo(query, max_results)
+    response_data = response.json()
+    raw_results = response_data.get("results", [])
+
+    documents = []
+
+    for result in raw_results:
+        title = str(result.get("title", "")).strip()
+        url = str(result.get("url", "")).strip()
+
+        content = (
+            result.get("raw_content")
+            or result.get("content")
+            or ""
+        )
+
+        content = str(content).strip()
+
+        if not url or not content:
+            continue
+
+        documents.append(
+            {
+                "title": title,
+                "url": url,
+                "content": content[:14000],
+            }
+        )
+
+    return documents
