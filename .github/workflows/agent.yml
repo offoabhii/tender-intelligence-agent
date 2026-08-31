@@ -1,0 +1,32 @@
+name: Tender Agent Auto-Run
+on:
+  schedule:
+    - cron: '0 */6 * * *'
+  workflow_dispatch:
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Run Agent Pipeline
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_BASE_URL: ${{ secrets.OPENAI_BASE_URL }}
+          TAVILY_API_KEY: ${{ secrets.TAVILY_API_KEY }}
+        run: python run_agent.py
+      - name: Save DB back to repo
+        run: |
+          git config --global user.name "tender-bot"
+          git config --global user.email "bot@tender.local"
+          git add -f tenders.db system_health.log || true
+          git commit -m "auto: update tenders [skip ci]" || echo "No changes"
+          git push || echo "No push"
