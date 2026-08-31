@@ -1,7 +1,24 @@
+# Secrets: NEVER commit this file
 .env
+
+# Python cache
 __pycache__/
 *.pyc
-.venv/
+*.pyo
+*.pyd
+
+# Virtual environments
 venv/
-errors.alert
-.streamlit/
+.venv/
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Local runtime logs
+*.log
+
+# Keep generated real JSON and database tracked.
+# Do NOT ignore data/live_tenders.json or data/health.json.
