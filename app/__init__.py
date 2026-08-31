@@ -1,1 +1,2 @@
 
+"""Tender Intelligence Agent package."""
