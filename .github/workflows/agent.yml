@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
 
   schedule:
-    # Every six hours.
+    # Runs every 6 hours.
     - cron: "0 */6 * * *"
 
 permissions:
@@ -36,14 +36,28 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
+      - name: Verify required project files
+        run: |
+          echo "=== Root files ==="
+          ls -la
+
+          echo "=== App files ==="
+          ls -la app
+
+          test -f app/config.py
+          test -f app/agent_runner.py
+          test -f app/auditor.py
+          test -f app/scraper.py
+          test -f run_agent.py
+
       - name: Create data directory
         run: mkdir -p data
 
       - name: Run real tender pipeline
         env:
           TAVILY_API_KEY: ${{ secrets.TAVILY_API_KEY }}
-          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GEMINI_MODEL: gemini-2.0-flash
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
           DATABASE_URL: sqlite:///./data/tenders.db
           PYTHONPATH: .
@@ -66,22 +80,20 @@ jobs:
           git config user.name "Tender Intelligence Bot"
           git config user.email "tender-intelligence-bot@users.noreply.github.com"
 
-          git add -f data/live_tenders.json data/health.json data/tenders.db
+          git add -f data/ 2>/dev/null || true
 
           if git diff --cached --quiet; then
-            echo "No output changes to commit."
+            echo "No generated data changes to commit."
           else
             git commit -m "chore: update live tender scan"
             git push origin main
           fi
 
-      - name: Upload run output artifact
+      - name: Upload workflow artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: tender-scan-${{ github.run_id }}
-          path: |
-            data/live_tenders.json
-            data/health.json
-            data/tenders.db
+          name: tender-agent-output-${{ github.run_id }}
+          path: data/
+          if-no-files-found: warn
           retention-days: 14
