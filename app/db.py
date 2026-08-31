@@ -1,116 +1,144 @@
+"""
+Optional SQLite audit storage.
+
+The deployed Streamlit dashboard reads JSON from data/live_tenders.json.
+SQLite is retained only as a local audit copy.
+"""
+
 import os
-import sqlite3
 from datetime import datetime
 
-DB_FILE = "tenders.db"
+from sqlalchemy import (
+    Boolean,
+    Column,
+    DateTime,
+    Integer,
+    String,
+    Text,
+    create_engine,
+)
+from sqlalchemy.orm import declarative_base, sessionmaker
 
-class TenderRecordObj:
-    def __init__(self, id, title, source_url, category, closing_date, issued_by, qualification_criteria, eligibility_status, is_net_cost, is_open_now, extraction_confidence, found_at):
-        self.id = id
-        self.title = title
-        self.source_url = source_url
-        self.category = category
-        self.closing_date = closing_date
-        self.issued_by = issued_by
-        self.qualification_criteria = qualification_criteria
-        self.eligibility_status = eligibility_status
-        self.is_net_cost = bool(is_net_cost)
-        self.is_open_now = bool(is_open_now)
-        self.extraction_confidence = extraction_confidence
-        self.found_at = found_at
+DATABASE_URL = os.getenv(
+    "DATABASE_URL",
+    "sqlite:///./data/tenders.db",
+)
 
-class SystemLogObj:
-    def __init__(self, id, timestamp, status, message):
-        self.id = id
-        self.timestamp = timestamp
-        self.status = status
-        self.message = message
+if DATABASE_URL.startswith("sqlite:///"):
+    db_path = DATABASE_URL.replace("sqlite:///", "", 1)
+    db_folder = os.path.dirname(db_path)
 
-def get_conn():
-    conn = sqlite3.connect(DB_FILE)
-    conn.row_factory = sqlite3.Row
-    return conn
+    if db_folder:
+        os.makedirs(db_folder, exist_ok=True)
+
+engine = create_engine(
+    DATABASE_URL,
+    connect_args={"check_same_thread": False}
+    if DATABASE_URL.startswith("sqlite")
+    else {},
+)
+
+SessionLocal = sessionmaker(
+    autocommit=False,
+    autoflush=False,
+    bind=engine,
+)
+
+Base = declarative_base()
+
+
+class TenderRecord(Base):
+    __tablename__ = "tenders"
+
+    id = Column(Integer, primary_key=True)
+    title = Column(String(1000), nullable=False)
+    source_url = Column(String(2000), nullable=False)
+    category = Column(String(200), nullable=False)
+    closing_date = Column(String(30), nullable=False)
+    issued_by = Column(String(500), default="NOT SURE")
+    qualification_criteria = Column(Text, default="NOT SURE")
+    eligibility_status = Column(String(50), default="NOT SURE")
+    is_net_cost = Column(Boolean, default=False)
+    is_open_now = Column(Boolean, default=False)
+    confidence = Column(String(20), default="LOW")
+    evidence = Column(Text, default="NOT SURE")
+    found_at = Column(DateTime, default=datetime.utcnow)
+
+
+class SystemLog(Base):
+    __tablename__ = "system_logs"
+
+    id = Column(Integer, primary_key=True)
+    timestamp = Column(DateTime, default=datetime.utcnow)
+    status = Column(String(40), nullable=False)
+    message = Column(Text, nullable=False)
+
 
 def init_db():
-    conn = get_conn()
-    cur = conn.cursor()
-    cur.execute("""
-    CREATE TABLE IF NOT EXISTS tenders (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        title TEXT NOT NULL,
-        source_url TEXT,
-        category TEXT,
-        closing_date TEXT DEFAULT 'NOT SURE',
-        issued_by TEXT DEFAULT 'NOT SURE',
-        qualification_criteria TEXT DEFAULT 'NOT SURE',
-        eligibility_status TEXT DEFAULT 'NOT SURE',
-        is_net_cost INTEGER DEFAULT 0,
-        is_open_now INTEGER DEFAULT 0,
-        extraction_confidence TEXT DEFAULT 'NOT SURE',
-        found_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    )
-    """)
-    cur.execute("""
-    CREATE TABLE IF NOT EXISTS system_logs (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        status TEXT,
-        message TEXT
-    )
-    """)
-    conn.commit()
-    conn.close()
+    Base.metadata.create_all(bind=engine)
 
-def save_tender(t):
-    conn = get_conn()
-    cur = conn.cursor()
-    cur.execute("SELECT id FROM tenders WHERE title=? AND source_url=?", (t.title, t.source_url))
-    if cur.fetchone() is None:
-        cur.execute("""
-        INSERT INTO tenders (title, source_url, category, closing_date, issued_by, qualification_criteria, eligibility_status, is_net_cost, is_open_now, extraction_confidence, found_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (t.title, t.source_url, t.category, t.closing_date, t.issued_by, t.qualification_criteria, t.eligibility_status, int(t.is_net_cost), int(t.is_open_now), t.extraction_confidence, datetime.utcnow()))
-        conn.commit()
-    conn.close()
 
-def get_all_open_tenders():
-    conn = get_conn()
-    cur = conn.cursor()
-    cur.execute("SELECT * FROM tenders WHERE is_open_now=1 ORDER BY found_at DESC")
-    rows = cur.fetchall()
-    conn.close()
-    result = []
-    for r in rows:
-        try:
-            ts = datetime.fromisoformat(r["found_at"]) if isinstance(r["found_at"], str) else r["found_at"]
-        except:
-            ts = datetime.utcnow()
-        result.append(TenderRecordObj(r["id"], r["title"], r["source_url"], r["category"], r["closing_date"], r["issued_by"], r["qualification_criteria"], r["eligibility_status"], r["is_net_cost"], r["is_open_now"], r["extraction_confidence"], ts))
-    return result
+def save_tender(tender: dict) -> bool:
+    """Save once using title + original source URL as duplicate key."""
 
-def get_logs(limit=20):
-    conn = get_conn()
-    cur = conn.cursor()
-    cur.execute("SELECT * FROM system_logs ORDER BY timestamp DESC LIMIT ?", (limit,))
-    rows = cur.fetchall()
-    conn.close()
-    logs = []
-    for r in rows:
-        try:
-            ts = datetime.fromisoformat(r["timestamp"]) if isinstance(r["timestamp"], str) else r["timestamp"]
-        except:
-            ts = datetime.utcnow()
-        logs.append(SystemLogObj(r["id"], ts, r["status"], r["message"]))
-    return logs
+    session = SessionLocal()
 
-def log_system_status(status: str, msg=""):
-    conn = get_conn()
-    cur = conn.cursor()
-    cur.execute("INSERT INTO system_logs (status, message, timestamp) VALUES (?, ?, ?)", (status, msg, datetime.utcnow()))
-    conn.commit()
-    conn.close()
     try:
-        with open("system_health.log", "a", encoding="utf-8") as f:
-            f.write(f"{datetime.utcnow()} | {status} | {msg}\n")
-    except:
-        pass
+        existing = session.query(TenderRecord).filter_by(
+            title=tender["title"],
+            source_url=tender["source_url"],
+        ).first()
+
+        if existing:
+            return False
+
+        session.add(
+            TenderRecord(
+                title=tender["title"],
+                source_url=tender["source_url"],
+                category=tender["category"],
+                closing_date=tender["closing_date"],
+                issued_by=tender.get("issued_by", "NOT SURE"),
+                qualification_criteria=tender.get(
+                    "qualification_criteria",
+                    "NOT SURE",
+                ),
+                eligibility_status=tender.get(
+                    "eligibility_status",
+                    "NOT SURE",
+                ),
+                is_net_cost=tender.get("is_net_cost", False),
+                is_open_now=tender.get("is_open_now", False),
+                confidence=tender.get("confidence", "LOW"),
+                evidence=tender.get("evidence", "NOT SURE"),
+            )
+        )
+
+        session.commit()
+        return True
+
+    except Exception:
+        session.rollback()
+        raise
+
+    finally:
+        session.close()
+
+
+def log_system_status(status: str, message: str):
+    session = SessionLocal()
+
+    try:
+        session.add(
+            SystemLog(
+                status=status.upper(),
+                message=message,
+            )
+        )
+        session.commit()
+
+    except Exception:
+        session.rollback()
+
+    finally:
+        session.close()
