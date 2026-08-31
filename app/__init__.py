@@ -1,1 +1,1 @@
-# empty
+"""Tender Intelligence Agent application package."""
