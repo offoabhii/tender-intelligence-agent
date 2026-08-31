@@ -1,11 +1,10 @@
 streamlit
-pydantic>=2.5.0
+pydantic
 python-dotenv
 requests
 beautifulsoup4
 lxml
-duckduckgo-search
 pandas
+duckduckgo-search
 google-generativeai
 openai
-tavily-python
